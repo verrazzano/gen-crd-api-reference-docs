@@ -33,12 +33,14 @@ var (
 	flAPIDir      = flag.String("api-dir", "", "api directory (or import path), point this to pkg/apis")
 	flTemplateDir = flag.String("template-dir", "template", "path to template/ dir")
 
-	flHTTPAddr = flag.String("http-addr", "", "start an HTTP server on specified addr to view the result (e.g. :8080)")
-	flOutFile  = flag.String("out-file", "", "path to output file to save the result")
+	flHTTPAddr       = flag.String("http-addr", "", "start an HTTP server on specified addr to view the result (e.g. :8080)")
+	flOutFile        = flag.String("out-file", "", "path to output file to save the result")
+	flCollapseInline = flag.Bool("collapse-inline", false, "display the underlying fields for inline values")
 )
 
 const (
 	docCommentForceIncludes = "// +gencrdrefdocs:force"
+	inlinedFromComment      = "inlinedFrom"
 )
 
 type generatorConfig struct {
@@ -75,6 +77,11 @@ type apiPackage struct {
 	GoPackages []*types.Package
 	Types      []*types.Type // because multiple 'types.Package's can add types to an apiVersion
 	Constants  []*types.Type
+}
+
+type inlinedItemReference struct {
+	Name      string
+	Reference string
 }
 
 func (v *apiPackage) identifier() string { return fmt.Sprintf("%s/%s", v.apiGroup, v.apiVersion) }
@@ -141,6 +148,13 @@ func main() {
 	apiPackages, err := combineAPIPackages(pkgs)
 	if err != nil {
 		klog.Fatal(err)
+	}
+
+	if flCollapseInline != nil && *flCollapseInline {
+		err := collapseInlineAPIPackages(apiPackages, config)
+		if err != nil {
+			klog.Fatal(err)
+		}
 	}
 
 	mkOutput := func() (string, error) {
@@ -298,6 +312,140 @@ func combineAPIPackages(pkgs []*types.Package) ([]*apiPackage, error) {
 		out = append(out, pkgMap[id])
 	}
 	return out, nil
+}
+
+// collapseInlineAPIPackages collapses all inline members for a list of API packages
+func collapseInlineAPIPackages(apiPackages []*apiPackage, c generatorConfig) error {
+	typePkgMap := extractTypeToPackageMap(apiPackages)
+	for i := range apiPackages {
+		if err := collapseInlineTypes(typePkgMap, c, apiPackages[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// collapseInlineTypes collapses all inline members for all types in a given API package
+func collapseInlineTypes(typePkgMap map[*types.Type]*apiPackage, c generatorConfig, pkg *apiPackage) error {
+	var err error
+	for i := range pkg.Types {
+		pkg.Types[i].Members, err = inlineMembers(typePkgMap, c, pkg, pkg.Types[i])
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// inlineMembers recursively collapses inline members to their leaf types
+func inlineMembers(typePkgMap map[*types.Type]*apiPackage, c generatorConfig, pkg *apiPackage, t *types.Type) ([]types.Member, error) {
+	var newMembers []types.Member
+	for i := range t.Members {
+		if memberType := findMemberType(pkg, t.Members[i]); fieldEmbedded(t.Members[i]) && memberType != nil {
+			collapsedMembers, err := inlineMembers(typePkgMap, c, pkg, memberType)
+			if err != nil {
+				return newMembers, err
+			}
+			membersWithComments, err := populateInlinedMemberComments(typePkgMap, c, collapsedMembers, memberType)
+			if err != nil {
+				return newMembers, err
+			}
+
+			newMembers = append(newMembers, membersWithComments...)
+		} else {
+			newMembers = append(newMembers, t.Members[i])
+		}
+	}
+	return newMembers, nil
+}
+
+// findMemberType returns a type from the API Package with the same name as the given member
+func findMemberType(pkg *apiPackage, m types.Member) *types.Type {
+	for i := range pkg.Types {
+		if pkg.Types[i].Name.Name == m.Name {
+			return pkg.Types[i]
+		}
+	}
+	return nil
+}
+
+// populateInlinedMemberComments creates comments for the given member list to hold parent resources
+func populateInlinedMemberComments(typePkgMap map[*types.Type]*apiPackage, c generatorConfig, members []types.Member, parentType *types.Type) ([]types.Member, error) {
+	for i := range members {
+		if err := createOrUpdateComment(typePkgMap, c, &members[i], inlinedFromComment, parentType); err != nil {
+			return members, err
+		}
+	}
+	return members, nil
+}
+
+// createOrUpdateComment creates a comment object from the inlinedItemReference that includes the parent name and link
+// This is used in rendering to generate the link object in the collapsed comment when we generate the members
+func createOrUpdateComment(typePkgMap map[*types.Type]*apiPackage, c generatorConfig, member *types.Member, key string, t *types.Type) error {
+	link, err := linkForType(t, c, typePkgMap)
+	if err != nil {
+		return err
+	}
+
+	commentItem := inlinedItemReference{
+		Name:      t.Name.Name,
+		Reference: link,
+	}
+
+	for i, line := range member.CommentLines {
+		splitLine := strings.SplitN(line, "=", 1)
+		if !strings.HasPrefix(line, "+") || !strings.HasPrefix(strings.ReplaceAll(line, "+", ""), key) || len(splitLine) < 2 {
+			continue
+		}
+		var itemRefs []inlinedItemReference
+		err := json.Unmarshal([]byte(splitLine[1]), &itemRefs)
+		if err != nil {
+			return err
+		}
+
+		// prepend the comment item because
+		// the recursion causes the parent references to populate in reverse order
+		itemRefs = append([]inlinedItemReference{commentItem}, itemRefs...)
+		itemByte, err := json.Marshal(itemRefs)
+		if err != nil {
+			return err
+		}
+
+		member.CommentLines[i] = fmt.Sprintf("%s,%s", line, string(itemByte))
+		return nil
+	}
+
+	itemByte, err := json.Marshal([]inlinedItemReference{commentItem})
+	if err != nil {
+		return err
+	}
+	member.CommentLines = append(member.CommentLines, fmt.Sprintf("+%s=%s", key, string(itemByte)))
+	return nil
+}
+
+// isMemberInlined returns true if the member has a inlinedFrom comment
+func isMemberInlined(m *types.Member) bool {
+	tags := types.ExtractCommentTags("+", m.CommentLines)
+	_, ok := tags[inlinedFromComment]
+	return ok
+}
+
+// getInlinedTypes returns a list of types given in the parent list
+// This list is used to render parent object and their links
+func getInlinedTypes(m *types.Member) []inlinedItemReference {
+	tags := types.ExtractCommentTags("+", m.CommentLines)
+	collapsedItems, ok := tags[inlinedFromComment]
+	if !ok || len(collapsedItems) != 1 {
+		return []inlinedItemReference{}
+	}
+
+	var itemRefs []inlinedItemReference
+	err := json.Unmarshal([]byte(collapsedItems[0]), &itemRefs)
+	if err != nil {
+		klog.Fatal(err)
+	}
+
+	return itemRefs
 }
 
 // isVendorPackage determines if package is coming from vendor/ dir.
@@ -685,6 +833,8 @@ func render(w io.Writer, pkgs []*apiPackage, config generatorConfig) error {
 		"isLocalType":      isLocalType,
 		"isOptionalMember": isOptionalMember,
 		"constantsOfType":  func(t *types.Type) []*types.Type { return constantsOfType(t, typePkgMap[t]) },
+		"isMemberInlined":  isMemberInlined,
+		"inlinedTypes":     getInlinedTypes,
 	}).ParseGlob(filepath.Join(*flTemplateDir, "*.tpl"))
 	if err != nil {
 		return errors.Wrap(err, "parse error")

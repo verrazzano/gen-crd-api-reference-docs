@@ -22,6 +22,12 @@
             </p>
         {{ end}}
 
+        {{ if isMemberInlined . }}
+            <p>
+                (Inlined from {{ range (inlinedTypes .) }}<a href="{{ .Reference }}">{{ .Name }}</a>.{{- end -}})
+            </p>
+        {{ end }}
+
         {{ if isOptionalMember .}}
             <em>(Optional)</em>
         {{ end }}
