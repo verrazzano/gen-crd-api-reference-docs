@@ -40,7 +40,7 @@ var (
 
 const (
 	docCommentForceIncludes = "// +gencrdrefdocs:force"
-	collapsedFromComment    = "collapsedFrom"
+	inlinedFromComment      = "inlinedFrom"
 )
 
 type generatorConfig struct {
@@ -79,7 +79,7 @@ type apiPackage struct {
 	Constants  []*types.Type
 }
 
-type collapsedItemReference struct {
+type inlinedItemReference struct {
 	Name      string
 	Reference string
 }
@@ -329,7 +329,7 @@ func collapseInlineAPIPackages(apiPackages []*apiPackage, c generatorConfig) err
 func collapseInlineTypes(typePkgMap map[*types.Type]*apiPackage, c generatorConfig, pkg *apiPackage) error {
 	var err error
 	for i := range pkg.Types {
-		pkg.Types[i].Members, err = collapseMembers(typePkgMap, c, pkg, pkg.Types[i])
+		pkg.Types[i].Members, err = inlineMembers(typePkgMap, c, pkg, pkg.Types[i])
 		if err != nil {
 			return err
 		}
@@ -337,16 +337,16 @@ func collapseInlineTypes(typePkgMap map[*types.Type]*apiPackage, c generatorConf
 	return nil
 }
 
-// collapseMembers recursively collapses inline members to their leaf types
-func collapseMembers(typePkgMap map[*types.Type]*apiPackage, c generatorConfig, pkg *apiPackage, t *types.Type) ([]types.Member, error) {
+// inlineMembers recursively collapses inline members to their leaf types
+func inlineMembers(typePkgMap map[*types.Type]*apiPackage, c generatorConfig, pkg *apiPackage, t *types.Type) ([]types.Member, error) {
 	var newMembers []types.Member
 	for i := range t.Members {
 		if memberType := findMemberType(pkg, t.Members[i]); fieldEmbedded(t.Members[i]) && memberType != nil {
-			collapsedMembers, err := collapseMembers(typePkgMap, c, pkg, memberType)
+			collapsedMembers, err := inlineMembers(typePkgMap, c, pkg, memberType)
 			if err != nil {
 				return newMembers, err
 			}
-			membersWithComments, err := populateCollapsedMemberComments(typePkgMap, c, collapsedMembers, memberType)
+			membersWithComments, err := populateInlinedMemberComments(typePkgMap, c, collapsedMembers, memberType)
 			if err != nil {
 				return newMembers, err
 			}
@@ -369,17 +369,17 @@ func findMemberType(pkg *apiPackage, m types.Member) *types.Type {
 	return nil
 }
 
-// populateCollapsedMemberComments creates comments for the given member list to hold parent resources
-func populateCollapsedMemberComments(typePkgMap map[*types.Type]*apiPackage, c generatorConfig, members []types.Member, parentType *types.Type) ([]types.Member, error) {
+// populateInlinedMemberComments creates comments for the given member list to hold parent resources
+func populateInlinedMemberComments(typePkgMap map[*types.Type]*apiPackage, c generatorConfig, members []types.Member, parentType *types.Type) ([]types.Member, error) {
 	for i := range members {
-		if err := createOrUpdateComment(typePkgMap, c, &members[i], collapsedFromComment, parentType); err != nil {
+		if err := createOrUpdateComment(typePkgMap, c, &members[i], inlinedFromComment, parentType); err != nil {
 			return members, err
 		}
 	}
 	return members, nil
 }
 
-// createOrUpdateComment creates a comment object from the collapsedItemReference that includes the parent name and link
+// createOrUpdateComment creates a comment object from the inlinedItemReference that includes the parent name and link
 // This is used in rendering to generate the link object in the collapsed comment when we generate the members
 func createOrUpdateComment(typePkgMap map[*types.Type]*apiPackage, c generatorConfig, member *types.Member, key string, t *types.Type) error {
 	link, err := linkForType(t, c, typePkgMap)
@@ -387,7 +387,7 @@ func createOrUpdateComment(typePkgMap map[*types.Type]*apiPackage, c generatorCo
 		return err
 	}
 
-	commentItem := collapsedItemReference{
+	commentItem := inlinedItemReference{
 		Name:      t.Name.Name,
 		Reference: link,
 	}
@@ -397,7 +397,7 @@ func createOrUpdateComment(typePkgMap map[*types.Type]*apiPackage, c generatorCo
 		if !strings.HasPrefix(line, "+") || !strings.HasPrefix(strings.ReplaceAll(line, "+", ""), key) || len(splitLine) < 2 {
 			continue
 		}
-		var itemRefs []collapsedItemReference
+		var itemRefs []inlinedItemReference
 		err := json.Unmarshal([]byte(splitLine[1]), &itemRefs)
 		if err != nil {
 			return err
@@ -405,7 +405,7 @@ func createOrUpdateComment(typePkgMap map[*types.Type]*apiPackage, c generatorCo
 
 		// prepend the comment item because
 		// the recursion causes the parent references to populate in reverse order
-		itemRefs = append([]collapsedItemReference{commentItem}, itemRefs...)
+		itemRefs = append([]inlinedItemReference{commentItem}, itemRefs...)
 		itemByte, err := json.Marshal(itemRefs)
 		if err != nil {
 			return err
@@ -415,7 +415,7 @@ func createOrUpdateComment(typePkgMap map[*types.Type]*apiPackage, c generatorCo
 		return nil
 	}
 
-	itemByte, err := json.Marshal([]collapsedItemReference{commentItem})
+	itemByte, err := json.Marshal([]inlinedItemReference{commentItem})
 	if err != nil {
 		return err
 	}
@@ -423,23 +423,23 @@ func createOrUpdateComment(typePkgMap map[*types.Type]*apiPackage, c generatorCo
 	return nil
 }
 
-// isMemberCollapsed returns true if the member has a collapsedFrom comment
-func isMemberCollapsed(m *types.Member) bool {
+// isMemberInlined returns true if the member has a inlinedFrom comment
+func isMemberInlined(m *types.Member) bool {
 	tags := types.ExtractCommentTags("+", m.CommentLines)
-	_, ok := tags[collapsedFromComment]
+	_, ok := tags[inlinedFromComment]
 	return ok
 }
 
-// getCollapsedTypes returns a list of types given in the parent list
+// getInlinedTypes returns a list of types given in the parent list
 // This list is used to render parent object and their links
-func getCollapsedTypes(m *types.Member) []collapsedItemReference {
+func getInlinedTypes(m *types.Member) []inlinedItemReference {
 	tags := types.ExtractCommentTags("+", m.CommentLines)
-	collapsedItems, ok := tags[collapsedFromComment]
+	collapsedItems, ok := tags[inlinedFromComment]
 	if !ok || len(collapsedItems) != 1 {
-		return []collapsedItemReference{}
+		return []inlinedItemReference{}
 	}
 
-	var itemRefs []collapsedItemReference
+	var itemRefs []inlinedItemReference
 	err := json.Unmarshal([]byte(collapsedItems[0]), &itemRefs)
 	if err != nil {
 		klog.Fatal(err)
@@ -825,16 +825,16 @@ func render(w io.Writer, pkgs []*apiPackage, config generatorConfig) error {
 			}
 			return v
 		},
-		"anchorIDForType":   func(t *types.Type) string { return anchorIDForLocalType(t, typePkgMap) },
-		"safe":              safe,
-		"sortedTypes":       sortTypes,
-		"typeReferences":    func(t *types.Type) []*types.Type { return typeReferences(t, config, references) },
-		"hiddenMember":      func(m types.Member) bool { return hiddenMember(m, config) },
-		"isLocalType":       isLocalType,
-		"isOptionalMember":  isOptionalMember,
-		"constantsOfType":   func(t *types.Type) []*types.Type { return constantsOfType(t, typePkgMap[t]) },
-		"isMemberCollapsed": isMemberCollapsed,
-		"collapsedTypes":    getCollapsedTypes,
+		"anchorIDForType":  func(t *types.Type) string { return anchorIDForLocalType(t, typePkgMap) },
+		"safe":             safe,
+		"sortedTypes":      sortTypes,
+		"typeReferences":   func(t *types.Type) []*types.Type { return typeReferences(t, config, references) },
+		"hiddenMember":     func(m types.Member) bool { return hiddenMember(m, config) },
+		"isLocalType":      isLocalType,
+		"isOptionalMember": isOptionalMember,
+		"constantsOfType":  func(t *types.Type) []*types.Type { return constantsOfType(t, typePkgMap[t]) },
+		"isMemberInlined":  isMemberInlined,
+		"inlinedTypes":     getInlinedTypes,
 	}).ParseGlob(filepath.Join(*flTemplateDir, "*.tpl"))
 	if err != nil {
 		return errors.Wrap(err, "parse error")

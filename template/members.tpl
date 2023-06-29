@@ -22,9 +22,9 @@
             </p>
         {{ end}}
 
-        {{ if isMemberCollapsed . }}
+        {{ if isMemberInlined . }}
             <p>
-                (Inlined from {{ range (collapsedTypes .) }}<a href="{{ .Reference }}">{{ .Name }}</a>.{{- end -}})
+                (Inlined from {{ range (inlinedTypes .) }}<a href="{{ .Reference }}">{{ .Name }}</a>.{{- end -}})
             </p>
         {{ end }}
 
