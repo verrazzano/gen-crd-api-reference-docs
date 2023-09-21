@@ -346,7 +346,7 @@ func inlineMembers(typePkgMap map[*types.Type]*apiPackage, c generatorConfig, pk
 			if err != nil {
 				return newMembers, err
 			}
-			membersWithComments, err := populateInlinedMemberComments(typePkgMap, c, collapsedMembers, memberType)
+			membersWithComments, err := populateInlinedMemberComments(typePkgMap, c, collapsedMembers, memberType, t.Members[i].CommentLines)
 			if err != nil {
 				return newMembers, err
 			}
@@ -370,18 +370,20 @@ func findMemberType(pkg *apiPackage, m types.Member) *types.Type {
 }
 
 // populateInlinedMemberComments creates comments for the given member list to hold parent resources
-func populateInlinedMemberComments(typePkgMap map[*types.Type]*apiPackage, c generatorConfig, members []types.Member, parentType *types.Type) ([]types.Member, error) {
+func populateInlinedMemberComments(typePkgMap map[*types.Type]*apiPackage, c generatorConfig, members []types.Member, parentType *types.Type, parentComments []string) ([]types.Member, error) {
 	for i := range members {
-		if err := createOrUpdateComment(typePkgMap, c, &members[i], inlinedFromComment, parentType); err != nil {
+		if err := createOrUpdateInlineComment(typePkgMap, c, &members[i], inlinedFromComment, parentType); err != nil {
 			return members, err
 		}
+		// Append the parent comments so the information is not lost
+		members[i].CommentLines = append(parentComments, members[i].CommentLines...)
 	}
 	return members, nil
 }
 
-// createOrUpdateComment creates a comment object from the inlinedItemReference that includes the parent name and link
+// createOrUpdateInlineComment creates a comment object from the inlinedItemReference that includes the parent name and link
 // This is used in rendering to generate the link object in the collapsed comment when we generate the members
-func createOrUpdateComment(typePkgMap map[*types.Type]*apiPackage, c generatorConfig, member *types.Member, key string, t *types.Type) error {
+func createOrUpdateInlineComment(typePkgMap map[*types.Type]*apiPackage, c generatorConfig, member *types.Member, key string, t *types.Type) error {
 	link, err := linkForType(t, c, typePkgMap)
 	if err != nil {
 		return err
