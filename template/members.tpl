@@ -24,7 +24,7 @@
 
         {{ if isMemberInlined . }}
             <p>
-                (Inlined from {{ range (inlinedTypes .) }}<a href="{{ .Reference }}">{{ .Name }}</a>. Inlined comments are appended below.{{- end -}})
+                (Inlined from {{ range (inlinedTypes .) }}<a href="{{ .Reference }}">{{ .Name }}</a>. Inlined comments are appended in the following.{{- end -}})
             </p>
         {{ end }}
 

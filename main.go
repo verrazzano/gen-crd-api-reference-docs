@@ -376,6 +376,7 @@ func populateInlinedMemberComments(typePkgMap map[*types.Type]*apiPackage, c gen
 			return members, err
 		}
 		// Append the parent comments so the information is not lost
+		members[i].CommentLines = append([]string{""}, members[i].CommentLines...)
 		members[i].CommentLines = append(parentComments, members[i].CommentLines...)
 	}
 	return members, nil
